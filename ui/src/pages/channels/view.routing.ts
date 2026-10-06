@@ -1,3 +1,4 @@
+import { normalizeAgentIdStrict } from "@openclaw/normalization-core/agent-id";
 // Control UI view renders per-account agent routing for channel detail pages.
 import { html, nothing } from "lit";
 import { t } from "../../i18n/index.ts";
@@ -31,10 +32,22 @@ type RouteBinding = {
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null && !Array.isArray(value);
 
-/** Row id for one binding: omitted/empty account ids address the default row. */
+/**
+ * Canonical row identity. The runtime routing index trims and canonicalizes
+ * account ids (normalizeAgentIdStrict), so "BIZ", " biz ", and "biz" address
+ * the same account; comparisons must use the canonical form while authored
+ * match fields stay untouched. Omitted/empty ids address the default row.
+ */
+function canonicalAccountId(value: string): string {
+  const normalized = normalizeAgentIdStrict(value);
+  return normalized.ok ? normalized.value : value.trim();
+}
+
 function rowAccountId(binding: RouteBinding): string {
   const accountId = binding.match?.accountId;
-  return typeof accountId === "string" && accountId.trim() ? accountId : DEFAULT_ACCOUNT_ID;
+  return typeof accountId === "string" && accountId.trim()
+    ? canonicalAccountId(accountId)
+    : DEFAULT_ACCOUNT_ID;
 }
 
 function isChannelAccountBinding(binding: unknown, channelId: string): binding is RouteBinding {
@@ -134,10 +147,10 @@ export function patchAccountBinding(params: {
   const bindings: unknown[] = Array.isArray(params.configValue?.bindings)
     ? [...(params.configValue.bindings as unknown[])]
     : [];
+  const rowId = canonicalAccountId(params.accountId);
   const index = bindings.findIndex(
     (binding) =>
-      isChannelAccountBinding(binding, params.channelId) &&
-      rowAccountId(binding) === params.accountId,
+      isChannelAccountBinding(binding, params.channelId) && rowAccountId(binding) === rowId,
   );
   const agentId = params.agentId.trim();
   if (!agentId) {

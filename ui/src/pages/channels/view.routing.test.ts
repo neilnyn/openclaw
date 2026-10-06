@@ -147,6 +147,28 @@ describe("channel agent routing helpers", () => {
     expect(next).toEqual([keep]);
   });
 
+  it("matches padded and mixed-case account ids to their existing binding", () => {
+    // Runtime canonicalizes account ids (trim + lowercase), so "BIZ" and
+    // " biz " are the same account as "biz": the editor must resolve the
+    // existing binding instead of appending a duplicate that never wins.
+    const binding = {
+      agentId: "main",
+      match: { channel: "dingtalk-connector", accountId: " BIZ " },
+      session: { dmScope: "per-peer" },
+    };
+    expect(resolveAccountAgent([binding], "biz").agentId).toBe("main");
+    const next = patchAccountBinding({
+      configValue: { bindings: [binding] },
+      channelId: "dingtalk-connector",
+      accountId: "biz",
+      agentId: "test",
+    });
+    expect(next).toHaveLength(1);
+    // Authored match text preserved; only the agent changed.
+    expect(next[0]?.match).toEqual({ channel: "dingtalk-connector", accountId: " BIZ " });
+    expect(next[0]?.agentId).toBe("test");
+  });
+
   it("unions configured accounts with the runtime account roster", () => {
     // Runtime keeps an implicit default account active alongside named
     // accounts; the editor must offer that row too.
