@@ -1,10 +1,10 @@
 import { describe, expect, it } from "vitest";
 import {
+  patchAccountBinding,
   readChannelAccounts,
   readChannelRouteBindings,
   readAgentIds,
   resolveAccountAgent,
-  writeAccountBindings,
 } from "./view.routing.ts";
 
 const configWith = (bindings: unknown[], accounts?: Record<string, unknown>) => ({
@@ -18,13 +18,14 @@ const configWith = (bindings: unknown[], accounts?: Record<string, unknown>) => 
 });
 
 describe("channel agent routing helpers", () => {
-  it("lists explicit accounts and falls back to the implicit default", () => {
+  it("lists explicit accounts and falls back to the canonical default", () => {
     expect(readChannelAccounts(configWith([]), "dingtalk-connector")).toEqual([
       "main",
       "test-robot",
     ]);
-    expect(readChannelAccounts(configWith([], {}), "dingtalk-connector")).toEqual(["__default__"]);
-    expect(readChannelAccounts(null, "dingtalk-connector")).toEqual(["__default__"]);
+    // Runtime default row id (src/routing/account-id.ts DEFAULT_ACCOUNT_ID).
+    expect(readChannelAccounts(configWith([], {}), "dingtalk-connector")).toEqual(["default"]);
+    expect(readChannelAccounts(null, "dingtalk-connector")).toEqual(["default"]);
   });
 
   it("lists agent ids with a main fallback", () => {
@@ -48,57 +49,116 @@ describe("channel agent routing helpers", () => {
     expect(collected[0]?.agentId).toBe("main");
   });
 
-  it("resolves specific before wildcard", () => {
-    const bindings = [
-      { agentId: "main", match: { channel: "dingtalk-connector", accountId: "*" } },
-      { agentId: "test", match: { channel: "dingtalk-connector", accountId: "test-robot" } },
-    ];
-    expect(resolveAccountAgent(bindings, "test-robot")).toEqual({
-      agentId: "test",
+  it("resolves bindings with an omitted account id to the default row", () => {
+    // Runtime contract: { match: { channel } } without accountId targets the
+    // default account — the editor must surface it on the default row.
+    const bindings = [{ agentId: "support", match: { channel: "telegram" } }];
+    expect(resolveAccountAgent(bindings, "default")).toEqual({
+      agentId: "support",
       viaWildcard: false,
     });
-    expect(resolveAccountAgent(bindings, "main")).toEqual({
+    expect(resolveAccountAgent(bindings, "main").agentId).toBeNull();
+  });
+
+  it("patching one row preserves every other binding byte-for-byte", () => {
+    const scopedBinding = {
       agentId: "main",
-      viaWildcard: true,
+      comment: "owned by ops",
+      match: { channel: "dingtalk-connector", accountId: "main" },
+      session: { dmScope: "shared", groupScope: "shared" },
+    };
+    const telegramBinding = {
+      agentId: "support",
+      match: { channel: "telegram", accountId: "*" },
+    };
+    const omittedDefault = { agentId: "helper", match: { channel: "other-channel" } };
+    const peerBinding = {
+      agentId: "peer-agent",
+      match: { channel: "dingtalk-connector", peer: { kind: "direct", id: "p" } },
+    };
+    const config = configWith([scopedBinding, telegramBinding, omittedDefault, peerBinding]);
+
+    const next = patchAccountBinding({
+      configValue: config,
+      channelId: "dingtalk-connector",
+      accountId: "test-robot",
+      agentId: "test",
     });
-    expect(resolveAccountAgent(bindings, "unknown")).toEqual({
-      agentId: "main",
-      viaWildcard: true,
+
+    // Only the new row's binding is added; untouched bindings keep identity.
+    expect(next).toHaveLength(5);
+    expect(next[0]).toBe(scopedBinding);
+    expect(next[1]).toBe(telegramBinding);
+    expect(next[2]).toBe(omittedDefault);
+    expect(next[3]).toBe(peerBinding);
+    expect(next[4]).toEqual({
+      agentId: "test",
+      match: { channel: "dingtalk-connector", accountId: "test-robot" },
     });
   });
 
-  it("writes bindings preserving foreign entries and wildcard order", () => {
-    const foreign = [
-      { agentId: "x", match: { channel: "telegram", accountId: "*" } },
-      {
-        agentId: "z",
-        match: { channel: "dingtalk-connector", peer: { kind: "direct", id: "p" } },
-      },
-    ];
-    const configValue = configWith([
-      ...foreign,
-      { agentId: "old", match: { channel: "dingtalk-connector", accountId: "main" } },
-    ]);
-    const next = writeAccountBindings({
-      configValue,
+  it("changing an agent keeps that binding's non-agent fields and match shape", () => {
+    const scoped = {
+      agentId: "main",
+      comment: "owned by ops",
+      match: { channel: "dingtalk-connector", accountId: "main" },
+      session: { dmScope: "shared" },
+    };
+    const config = configWith([scoped]);
+    const next = patchAccountBinding({
+      configValue: config,
       channelId: "dingtalk-connector",
-      assignments: [
-        { accountId: "main", agentId: "main" },
-        { accountId: "test-robot", agentId: null },
-        { accountId: "*", agentId: "test" },
-      ],
+      accountId: "main",
+      agentId: "test",
     });
-    expect(next).toHaveLength(4);
-    // Foreign bindings survive untouched.
-    expect(next.slice(0, 2)).toEqual(foreign);
-    // Specific account bindings come before the wildcard catch-all.
-    expect(next[2]).toEqual({
+    expect(next[0]).toEqual({ ...scoped, agentId: "test" });
+    // The original binding object is not mutated.
+    expect(scoped.agentId).toBe("main");
+  });
+
+  it("patches the default row through an omitted-accountId binding", () => {
+    const omitted = { agentId: "helper", match: { channel: "telegram" } };
+    const next = patchAccountBinding({
+      configValue: { bindings: [omitted] },
+      channelId: "telegram",
+      accountId: "default",
+      agentId: "test",
+    });
+    // Recognized as the default row: agent swapped in place, match untouched.
+    expect(next).toEqual([{ ...omitted, agentId: "test" }]);
+  });
+
+  it("clearing a row removes only that row's binding", () => {
+    const keep = {
       agentId: "main",
       match: { channel: "dingtalk-connector", accountId: "main" },
-    });
-    expect(next[3]).toEqual({
+      session: { dmScope: "shared" },
+    };
+    const remove = {
       agentId: "test",
-      match: { channel: "dingtalk-connector", accountId: "*" },
+      match: { channel: "dingtalk-connector", accountId: "test-robot" },
+    };
+    const next = patchAccountBinding({
+      configValue: configWith([keep, remove]),
+      channelId: "dingtalk-connector",
+      accountId: "test-robot",
+      agentId: "",
     });
+    expect(next).toEqual([keep]);
+  });
+
+  it("inserts new specific bindings ahead of the channel wildcard", () => {
+    const wildcard = {
+      agentId: "main",
+      match: { channel: "dingtalk-connector", accountId: "*" },
+    };
+    const next = patchAccountBinding({
+      configValue: configWith([wildcard]),
+      channelId: "dingtalk-connector",
+      accountId: "main",
+      agentId: "test",
+    });
+    expect(next[0]?.match).toEqual({ channel: "dingtalk-connector", accountId: "main" });
+    expect(next[1]).toBe(wildcard);
   });
 });

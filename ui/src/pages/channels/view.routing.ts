@@ -1,12 +1,14 @@
 // Control UI view renders per-account agent routing for channel detail pages.
-import { html, nothing } from "lit";
+import { html } from "lit";
 import { t } from "../../i18n/index.ts";
 import type { ChannelsProps } from "./view.types.ts";
 
 // Mirrors the runtime wildcard for "every account on the channel".
 const WILDCARD_ACCOUNT = "*";
-// Implicit account id channels fall back to when no explicit accounts exist.
-const IMPLICIT_ACCOUNT_ID = "__default__";
+// Canonical implicit account id: must equal DEFAULT_ACCOUNT_ID in
+// src/routing/account-id.ts (the runtime resolves channels without an
+// accounts map, and bindings with an omitted accountId, to this id).
+const DEFAULT_ACCOUNT_ID = "default";
 
 type RouteBinding = {
   type?: string;
@@ -27,7 +29,32 @@ type RouteBinding = {
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null && !Array.isArray(value);
 
-/** Account ids configured for the channel; the implicit default when none. */
+/** Row id for one binding: omitted/empty account ids address the default row. */
+function rowAccountId(binding: RouteBinding): string {
+  const accountId = binding.match?.accountId;
+  return typeof accountId === "string" && accountId.trim() ? accountId : DEFAULT_ACCOUNT_ID;
+}
+
+function isChannelAccountBinding(binding: unknown, channelId: string): binding is RouteBinding {
+  if (!isRecord(binding) || !isRecord(binding.match)) {
+    return false;
+  }
+  if (binding.match.channel !== channelId) {
+    return false;
+  }
+  const type = binding.type;
+  if (type !== undefined && type !== "route") {
+    return false;
+  }
+  return (
+    binding.match.peer === undefined &&
+    binding.match.guildId === undefined &&
+    binding.match.teamId === undefined &&
+    binding.match.roles === undefined
+  );
+}
+
+/** Account ids configured for the channel; the canonical default when none. */
 export function readChannelAccounts(
   configValue: Record<string, unknown> | null,
   channelId: string,
@@ -41,7 +68,7 @@ export function readChannelAccounts(
       return keys;
     }
   }
-  return [IMPLICIT_ACCOUNT_ID];
+  return [DEFAULT_ACCOUNT_ID];
 }
 
 /** Agent ids available as routing targets. */
@@ -58,75 +85,79 @@ export function readChannelRouteBindings(
   channelId: string,
 ): RouteBinding[] {
   const bindings = Array.isArray(configValue?.bindings) ? (configValue.bindings as unknown[]) : [];
-  return bindings.filter((binding): binding is RouteBinding => {
-    if (!isRecord(binding) || !isRecord(binding.match)) {
-      return false;
-    }
-    if (binding.match.channel !== channelId) {
-      return false;
-    }
-    const type = binding.type;
-    if (type !== undefined && type !== "route") {
-      return false;
-    }
-    return (
-      binding.match.peer === undefined &&
-      binding.match.guildId === undefined &&
-      binding.match.teamId === undefined &&
-      binding.match.roles === undefined
-    );
-  });
+  return bindings.filter((binding) => isChannelAccountBinding(binding, channelId));
 }
 
 type EffectiveAgent = { agentId: string | null; viaWildcard: boolean };
 
 /** The agent an account resolves to: its own binding, else the channel wildcard. */
 export function resolveAccountAgent(bindings: RouteBinding[], accountId: string): EffectiveAgent {
-  const specific = bindings.find((binding) => (binding.match?.accountId ?? "") === accountId);
-  if (specific && typeof specific.agentId === "string") {
+  const specific = bindings.find((binding) => rowAccountId(binding) === accountId);
+  if (specific && typeof specific.agentId === "string" && specific.agentId) {
     return { agentId: specific.agentId, viaWildcard: false };
   }
   const wildcard = bindings.find((binding) => binding.match?.accountId === WILDCARD_ACCOUNT);
-  if (wildcard && typeof wildcard.agentId === "string") {
+  if (wildcard && typeof wildcard.agentId === "string" && wildcard.agentId) {
     return { agentId: wildcard.agentId, viaWildcard: true };
   }
   return { agentId: null, viaWildcard: false };
 }
 
-/** Writes account-level bindings, preserving every other binding as-is. */
-export function writeAccountBindings(params: {
+/**
+ * Patches exactly one account-level binding for the channel. Every other
+ * binding — other accounts (including accounts absent from the rendered
+ * rows), peer/acp bindings, session scopes, comments — is preserved
+ * byte-for-byte. Changing the agent on an existing binding keeps its
+ * non-agent fields (including an omitted-accountId match shape); clearing
+ * the agent removes only that row's binding.
+ */
+export function patchAccountBinding(params: {
   configValue: Record<string, unknown> | null;
   channelId: string;
-  /** agentId null removes the binding; WILDCARD_ACCOUNT addresses the catch-all. */
-  assignments: Array<{ accountId: string; agentId: string | null }>;
+  /** Row id: an account key, DEFAULT_ACCOUNT_ID, or WILDCARD_ACCOUNT. */
+  accountId: string;
+  /** Chosen agent id; empty clears the row's binding. */
+  agentId: string;
 }): Array<Record<string, unknown>> {
-  const { configValue, channelId, assignments } = params;
-  const bindings: unknown[] = Array.isArray(configValue?.bindings)
-    ? (configValue.bindings as unknown[])
+  const bindings: unknown[] = Array.isArray(params.configValue?.bindings)
+    ? [...(params.configValue.bindings as unknown[])]
     : [];
-  const channelAccountBindings = new Set<unknown>(readChannelRouteBindings(configValue, channelId));
-  const preserved = bindings.filter((binding) => !channelAccountBindings.has(binding)) as Array<
-    Record<string, unknown>
-  >;
-  const specific: RouteBinding[] = [];
-  let wildcard: RouteBinding | null = null;
-  for (const { accountId, agentId } of assignments) {
-    if (!agentId) {
-      continue;
+  const index = bindings.findIndex(
+    (binding) =>
+      isChannelAccountBinding(binding, params.channelId) &&
+      rowAccountId(binding) === params.accountId,
+  );
+  const agentId = params.agentId.trim();
+  if (!agentId) {
+    if (index >= 0) {
+      bindings.splice(index, 1);
     }
-    const binding: RouteBinding = {
-      agentId,
-      match: { channel: channelId, accountId },
-    };
-    if (accountId === WILDCARD_ACCOUNT) {
-      wildcard = binding;
-    } else {
-      specific.push(binding);
-    }
+    return bindings as Array<Record<string, unknown>>;
   }
-  // Specific bindings must come before the wildcard so the catch-all stays a
-  // fallback rather than shadowing per-account routes.
-  return [...preserved, ...specific, ...(wildcard ? [wildcard] : [])];
+  if (index >= 0) {
+    const previous = bindings[index] as RouteBinding;
+    // Only the agent changes: session scopes, comments, and the match shape
+    // (including omitted-accountId default bindings) survive intact.
+    bindings[index] = { ...previous, agentId };
+    return bindings as Array<Record<string, unknown>>;
+  }
+  const binding: Record<string, unknown> = {
+    agentId,
+    match: { channel: params.channelId, accountId: params.accountId },
+  };
+  // Keep specific bindings ahead of this channel's wildcard so the catch-all
+  // stays a fallback (runtime match order); otherwise append at the end.
+  let insertAt = bindings.length;
+  const wildcardIndex = bindings.findIndex(
+    (candidate) =>
+      isChannelAccountBinding(candidate, params.channelId) &&
+      (candidate as RouteBinding).match?.accountId === WILDCARD_ACCOUNT,
+  );
+  if (wildcardIndex >= 0) {
+    insertAt = wildcardIndex;
+  }
+  bindings.splice(insertAt, 0, binding);
+  return bindings as Array<Record<string, unknown>>;
 }
 
 export function renderChannelAgentRoutingSection(params: {
@@ -145,61 +176,35 @@ export function renderChannelAgentRoutingSection(params: {
     { accountId: WILDCARD_ACCOUNT, catchAll: true },
   ];
   const update = (accountId: string, agentId: string) => {
-    const assignments: Array<{ accountId: string; agentId: string | null }> = accounts.map(
-      (account) => {
-        if (account === accountId) {
-          return { accountId: account, agentId: agentId || null };
-        }
-        const effective = resolveAccountAgent(bindings, account);
-        // Accounts inheriting from the catch-all stay bindingless; the
-        // wildcard row owns their effective agent.
-        return {
-          accountId: account,
-          agentId: effective.viaWildcard ? null : effective.agentId,
-        };
-      },
-    );
-    assignments.push({
-      accountId: WILDCARD_ACCOUNT,
-      agentId:
-        accountId === WILDCARD_ACCOUNT
-          ? agentId || null
-          : resolveAccountAgent(bindings, WILDCARD_ACCOUNT).agentId,
-    });
     props.onConfigPatch(
       ["bindings"],
-      writeAccountBindings({ configValue, channelId, assignments }),
+      patchAccountBinding({ configValue, channelId, accountId, agentId }),
     );
   };
 
   return html`
-    <div class="settings-row settings-row--stacked">
-      <div class="settings-row__text">
-        <span class="settings-row__title">${t("channels.routing.title")}</span>
-        <p class="settings-row__desc">${t("channels.routing.description")}</p>
-      </div>
-      <div class="settings-row__control">
-        ${rows.map(({ accountId, catchAll }) => {
-          const effective = resolveAccountAgent(bindings, accountId);
-          const selected = effective.agentId ?? "";
-          return html`
-            <label class="field">
-              <span>
-                ${
-                  catchAll
-                    ? t("channels.routing.catchAll")
-                    : accountId === IMPLICIT_ACCOUNT_ID
-                      ? t("channels.routing.defaultAccount")
-                      : accountId
-                }
-                ${
-                  effective.viaWildcard
-                    ? html`<span class="settings-row__desc">
-                        (${t("channels.routing.viaCatchAll")})</span
-                      >`
-                    : nothing
-                }
+    <div class="settings-section">
+      <h3 class="settings-section__title">${t("channels.routing.title")}</h3>
+      <p class="settings-section__desc">${t("channels.routing.description")}</p>
+      ${rows.map(({ accountId, catchAll }) => {
+        const effective = resolveAccountAgent(bindings, accountId);
+        const selected = catchAll
+          ? (resolveAccountAgent(bindings, WILDCARD_ACCOUNT).agentId ?? "")
+          : (effective.agentId ?? "");
+        const title = catchAll
+          ? t("channels.routing.catchAll")
+          : accountId === DEFAULT_ACCOUNT_ID
+            ? t("channels.routing.defaultAccount")
+            : accountId;
+        return html`
+          <div class="settings-row">
+            <div class="settings-row__text">
+              <span class="settings-row__title">${title}</span>
+              <span class="settings-row__desc">
+                ${!catchAll && effective.viaWildcard ? t("channels.routing.viaCatchAll") : ""}
               </span>
+            </div>
+            <div class="settings-row__control">
               <select
                 class="settings-input"
                 ?disabled=${disabled}
@@ -216,11 +221,10 @@ export function renderChannelAgentRoutingSection(params: {
                   `,
                 )}
               </select>
-            </label>
-          `;
-        })}
-        <p class="settings-row__desc">${t("channels.routing.notSetHint")}</p>
-      </div>
+            </div>
+          </div>
+        `;
+      })}
     </div>
   `;
 }

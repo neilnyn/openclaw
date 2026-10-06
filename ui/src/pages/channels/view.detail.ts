@@ -15,7 +15,6 @@ import { channelDocsUrl } from "./hub-meta.ts";
 import { renderChannelConfigSection } from "./view.config.ts";
 import { renderNostrCard } from "./view.nostr.ts";
 import { renderChannelPairingDetail } from "./view.pairing.ts";
-import { renderChannelAgentRoutingSection } from "./view.routing.ts";
 import {
   boolStatusKind,
   formatNullableBoolean,
@@ -163,7 +162,6 @@ function renderChannelStatusBody(
       }
       ${lastError ? renderChannelErrorRow(lastError) : nothing}
       ${standardKey && status?.probe ? renderChannelProbeRow(status.probe) : nothing}
-      ${renderChannelAgentRoutingSection({ channelId: key, props })}
       ${renderChannelConfigSection({ channelId: key, props })}
       ${
         standardKey
