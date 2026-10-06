@@ -1,6 +1,8 @@
 // Control UI view renders per-account agent routing for channel detail pages.
-import { html } from "lit";
+import { html, nothing } from "lit";
 import { t } from "../../i18n/index.ts";
+import { resolveChannelAccounts } from "../../lib/channels/index.ts";
+import { resolveConfigDraftBase } from "../../lib/config/config-draft-model.ts";
 import type { ChannelsProps } from "./view.types.ts";
 
 // Mirrors the runtime wildcard for "every account on the channel".
@@ -54,21 +56,31 @@ function isChannelAccountBinding(binding: unknown, channelId: string): binding i
   );
 }
 
-/** Account ids configured for the channel; the canonical default when none. */
+/**
+ * Accounts the editor offers rows for: the configured accounts map unioned
+ * with the runtime's live account roster. The runtime keeps an implicit
+ * `default` account active whenever named accounts coexist with root or
+ * environment credentials (e.g. Discord), so the snapshot roster — not the
+ * config map alone — decides which accounts are addressable.
+ */
 export function readChannelAccounts(
   configValue: Record<string, unknown> | null,
   channelId: string,
+  runtimeAccountIds: string[] = [],
 ): string[] {
   const channels = isRecord(configValue?.channels) ? configValue.channels : {};
   const channel = isRecord(channels[channelId]) ? channels[channelId] : {};
   const accounts = channel.accounts;
-  if (isRecord(accounts)) {
-    const keys = Object.keys(accounts).filter((key) => key.trim().length > 0);
-    if (keys.length > 0) {
-      return keys;
+  const configured = isRecord(accounts)
+    ? Object.keys(accounts).filter((key) => key.trim().length > 0)
+    : [];
+  const roster = [...configured];
+  for (const accountId of runtimeAccountIds) {
+    if (accountId.trim() && !roster.includes(accountId)) {
+      roster.push(accountId);
     }
   }
-  return [DEFAULT_ACCOUNT_ID];
+  return roster.length > 0 ? roster : [DEFAULT_ACCOUNT_ID];
 }
 
 /** Agent ids available as routing targets. */
@@ -165,11 +177,22 @@ export function renderChannelAgentRoutingSection(params: {
   props: ChannelsProps;
 }) {
   const { channelId, props } = params;
-  const configValue = props.config.configForm;
-  const accounts = readChannelAccounts(configValue, channelId);
+  // Form patches must build on the same draft the shared configuration owner
+  // selects: a dirty raw-mode draft is authoritative, and building the
+  // replacement array on the stale parsed form would discard pending raw
+  // edits. An unparseable raw draft blocks form edits entirely.
+  const configValue = resolveConfigDraftBase(props.config);
+  const rawDraftBlocked = configValue === null;
+  const runtimeAccountIds = resolveChannelAccounts(
+    props.channels.channelsSnapshot?.channelAccounts,
+    channelId,
+  )
+    .map((account) => account.accountId)
+    .filter((accountId) => typeof accountId === "string");
+  const accounts = readChannelAccounts(configValue, channelId, runtimeAccountIds);
   const agentIds = readAgentIds(configValue);
   const bindings = readChannelRouteBindings(configValue, channelId);
-  const disabled = props.config.configSaving || props.config.configSchemaLoading;
+  const disabled = props.config.configSaving || props.config.configSchemaLoading || rawDraftBlocked;
 
   const rows = [
     ...accounts.map((accountId) => ({ accountId, catchAll: false })),
@@ -207,6 +230,7 @@ export function renderChannelAgentRoutingSection(params: {
             <div class="settings-row__control">
               <select
                 class="settings-input"
+                aria-label=${t("channels.routing.agentFor", { account: title })}
                 ?disabled=${disabled}
                 @change=${(event: Event) => {
                   update(accountId, (event.currentTarget as HTMLSelectElement).value);
@@ -228,3 +252,5 @@ export function renderChannelAgentRoutingSection(params: {
     </div>
   `;
 }
+
+export const __keepNothing = nothing;

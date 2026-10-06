@@ -472,6 +472,7 @@ export const en: TranslationMap & {
       description:
         "Choose which agent handles each account. Accounts without their own binding fall back to the catch-all row.",
       catchAll: "Other accounts (catch-all)",
+      agentFor: "Agent for {account}",
       defaultAccount: "Default account",
       viaCatchAll: "via catch-all",
       notSet: "Not set",

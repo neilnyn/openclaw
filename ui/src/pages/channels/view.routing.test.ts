@@ -147,6 +147,21 @@ describe("channel agent routing helpers", () => {
     expect(next).toEqual([keep]);
   });
 
+  it("unions configured accounts with the runtime account roster", () => {
+    // Runtime keeps an implicit default account active alongside named
+    // accounts; the editor must offer that row too.
+    expect(readChannelAccounts(configWith([]), "dingtalk-connector", ["default"])).toEqual([
+      "main",
+      "test-robot",
+      "default",
+    ]);
+    // Roster ids dedupe against configured keys.
+    expect(readChannelAccounts(configWith([]), "dingtalk-connector", ["main"])).toEqual([
+      "main",
+      "test-robot",
+    ]);
+  });
+
   it("inserts new specific bindings ahead of the channel wildcard", () => {
     const wildcard = {
       agentId: "main",
