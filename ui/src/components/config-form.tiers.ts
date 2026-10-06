@@ -8,13 +8,14 @@ function projectSchemaTier(params: {
   hints: ConfigUiHints;
 }): JsonSchema | null {
   const { schema, path, advanced, hints } = params;
-  // Maps (open-ended or typed) and tuples stay atomic: collection drafts add or
-  // edit whole entries, so sharding entry fields across tiers would hand each
-  // tier's draft a partial entry schema and reject cross-tier fields.
+  // Pure typed maps edit whole entries; partial schemas reject cross-tier fields.
+  // Mixed objects still project their named properties independently.
   if (
     Array.isArray(schema.items) ||
     schema.additionalProperties === true ||
-    (typeof schema.additionalProperties === "object" && schema.additionalProperties !== null)
+    (typeof schema.additionalProperties === "object" &&
+      schema.additionalProperties !== null &&
+      Object.keys(schema.properties ?? {}).length === 0)
   ) {
     return (hintForPath(path, hints)?.advanced ?? true) === advanced ? schema : null;
   }
