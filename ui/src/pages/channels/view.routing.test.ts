@@ -147,6 +147,42 @@ describe("channel agent routing helpers", () => {
     expect(next).toEqual([keep]);
   });
 
+  it("matches bindings whose channel id carries padding or case", () => {
+    const binding = {
+      agentId: "main",
+      match: { channel: " Telegram ", accountId: "*" },
+    };
+    expect(readChannelRouteBindings({ bindings: [binding] }, "telegram")).toHaveLength(1);
+  });
+
+  it("resolves a row whose configured key is mixed-case", () => {
+    // Configured keys keep authored spelling: a "BIZ" row must resolve its
+    // canonical "biz" binding, not fall through to Not set / wildcard.
+    const binding = {
+      agentId: "main",
+      match: { channel: "dingtalk-connector", accountId: "biz" },
+    };
+    expect(resolveAccountAgent([binding], "BIZ").agentId).toBe("main");
+  });
+
+  it("dedupes roster rows that differ only by canonical identity", () => {
+    expect(readChannelAccounts(configWith([]), "dingtalk-connector", ["MAIN"])).toEqual([
+      "main",
+      "test-robot",
+    ]);
+  });
+
+  it("recognizes a padded wildcard binding as the channel-wide fallback", () => {
+    const binding = {
+      agentId: "main",
+      match: { channel: "dingtalk-connector", accountId: " * " },
+    };
+    expect(resolveAccountAgent([binding], "test-robot")).toEqual({
+      agentId: "main",
+      viaWildcard: true,
+    });
+  });
+
   it("matches padded and mixed-case account ids to their existing binding", () => {
     // Runtime canonicalizes account ids (trim + lowercase), so "BIZ" and
     // " biz " are the same account as "biz": the editor must resolve the

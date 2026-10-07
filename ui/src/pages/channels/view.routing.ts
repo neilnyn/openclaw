@@ -43,6 +43,17 @@ function canonicalAccountId(value: string): string {
   return normalized.ok ? normalized.value : value.trim();
 }
 
+/** Channel identities are trimmed and lowercased by the runtime routing
+ * index, so " Telegram " and "telegram" address the same channel. */
+function canonicalChannelId(value: string): string {
+  return value.trim().toLowerCase();
+}
+
+/** Wildcard detection trims the authored pattern (" * " is channel-wide). */
+function isWildcardAccountId(value: unknown): boolean {
+  return typeof value === "string" && value.trim() === WILDCARD_ACCOUNT;
+}
+
 function rowAccountId(binding: RouteBinding): string {
   const accountId = binding.match?.accountId;
   return typeof accountId === "string" && accountId.trim()
@@ -54,7 +65,7 @@ function isChannelAccountBinding(binding: unknown, channelId: string): binding i
   if (!isRecord(binding) || !isRecord(binding.match)) {
     return false;
   }
-  if (binding.match.channel !== channelId) {
+  if (canonicalChannelId(String(binding.match.channel)) !== canonicalChannelId(channelId)) {
     return false;
   }
   const type = binding.type;
@@ -87,11 +98,18 @@ export function readChannelAccounts(
   const configured = isRecord(accounts)
     ? Object.keys(accounts).filter((key) => key.trim().length > 0)
     : [];
-  const roster = [...configured];
-  for (const accountId of runtimeAccountIds) {
-    if (accountId.trim() && !roster.includes(accountId)) {
-      roster.push(accountId);
+  const roster: string[] = [];
+  const seen = new Set<string>();
+  for (const accountId of [...configured, ...runtimeAccountIds]) {
+    if (!accountId.trim()) {
+      continue;
     }
+    const canonical = canonicalAccountId(accountId);
+    if (seen.has(canonical)) {
+      continue;
+    }
+    seen.add(canonical);
+    roster.push(accountId);
   }
   return roster.length > 0 ? roster : [DEFAULT_ACCOUNT_ID];
 }
@@ -117,11 +135,12 @@ type EffectiveAgent = { agentId: string | null; viaWildcard: boolean };
 
 /** The agent an account resolves to: its own binding, else the channel wildcard. */
 export function resolveAccountAgent(bindings: RouteBinding[], accountId: string): EffectiveAgent {
-  const specific = bindings.find((binding) => rowAccountId(binding) === accountId);
+  const rowId = canonicalAccountId(accountId);
+  const specific = bindings.find((binding) => rowAccountId(binding) === rowId);
   if (specific && typeof specific.agentId === "string" && specific.agentId) {
     return { agentId: specific.agentId, viaWildcard: false };
   }
-  const wildcard = bindings.find((binding) => binding.match?.accountId === WILDCARD_ACCOUNT);
+  const wildcard = bindings.find((binding) => isWildcardAccountId(binding.match?.accountId));
   if (wildcard && typeof wildcard.agentId === "string" && wildcard.agentId) {
     return { agentId: wildcard.agentId, viaWildcard: true };
   }
@@ -176,7 +195,7 @@ export function patchAccountBinding(params: {
   const wildcardIndex = bindings.findIndex(
     (candidate) =>
       isChannelAccountBinding(candidate, params.channelId) &&
-      (candidate as RouteBinding).match?.accountId === WILDCARD_ACCOUNT,
+      isWildcardAccountId((candidate as RouteBinding).match?.accountId),
   );
   if (wildcardIndex >= 0) {
     insertAt = wildcardIndex;
