@@ -147,6 +147,32 @@ describe("channel agent routing helpers", () => {
     expect(next).toEqual([keep]);
   });
 
+  it("treats empty scope constraints as account-level", () => {
+    // Runtime normalizes roles: [] and blank guild/team ids to absent
+    // constraints — the binding stays account-level and must be matched,
+    // not skipped in favor of appending an ineffective duplicate.
+    const binding = {
+      agentId: "main",
+      match: {
+        channel: "dingtalk-connector",
+        accountId: "biz",
+        roles: [],
+        guildId: "",
+        teamId: " ",
+      },
+    };
+    const collected = readChannelRouteBindings({ bindings: [binding] }, "dingtalk-connector");
+    expect(collected).toHaveLength(1);
+    const next = patchAccountBinding({
+      configValue: { bindings: [binding] },
+      channelId: "dingtalk-connector",
+      accountId: "biz",
+      agentId: "test",
+    });
+    expect(next).toHaveLength(1);
+    expect(next[0]?.agentId).toBe("test");
+  });
+
   it("matches bindings whose channel id carries padding or case", () => {
     const binding = {
       agentId: "main",

@@ -72,11 +72,17 @@ function isChannelAccountBinding(binding: unknown, channelId: string): binding i
   if (type !== undefined && type !== "route") {
     return false;
   }
+  // Runtime normalizes empty scope constraints to absent: blank guild/team
+  // ids and an empty roles array keep a binding account-level.
+  const blankConstraint = (value: unknown) =>
+    value === undefined || (typeof value === "string" && !value.trim());
+  const noRoles = (value: unknown) =>
+    value === undefined || (Array.isArray(value) && value.length === 0);
   return (
     binding.match.peer === undefined &&
-    binding.match.guildId === undefined &&
-    binding.match.teamId === undefined &&
-    binding.match.roles === undefined
+    blankConstraint(binding.match.guildId) &&
+    blankConstraint(binding.match.teamId) &&
+    noRoles(binding.match.roles)
   );
 }
 
@@ -273,7 +279,12 @@ export function renderChannelAgentRoutingSection(params: {
                 </option>
                 ${agentIds.map(
                   (agentId) => html`
-                    <option value=${agentId} ?selected=${selected === agentId}>${agentId}</option>
+                    <option
+                      value=${agentId}
+                      ?selected=${selected && canonicalAccountId(selected) === canonicalAccountId(agentId)}
+                    >
+                      ${agentId}
+                    </option>
                   `,
                 )}
               </select>
