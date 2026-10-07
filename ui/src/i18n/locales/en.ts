@@ -1521,6 +1521,82 @@ export const en: TranslationMap & {
     removeEntry: "Remove entry",
     renameRedactedBlocked:
       "This entry holds a stored secret. Add the new key with its value, then remove this one.",
+    fields: {
+      enabled: { label: "Enabled", help: "Turn this channel or account on and off." },
+      name: { label: "Display Name", help: "Human-friendly label for this account." },
+      clientId: {
+        label: "Client ID (AppKey)",
+        help: "DingTalk app credential; the AppKey from the developer console.",
+      },
+      clientSecret: {
+        label: "Client Secret (AppSecret)",
+        help: "App secret. Prefer moving it to the secrets vault instead of keeping plaintext.",
+      },
+      chatbotUserId: {
+        label: "Chatbot User ID",
+        help: "Robot user id ($:LWCP_v1:…); sharpens @-mention matching in groups. Optional.",
+      },
+      chatbotCorpId: { label: "Chatbot Corp ID" },
+      defaultAccount: {
+        label: "Default Account",
+        help: "Account used when no binding names one; falls back to the first account.",
+      },
+      dmPolicy: {
+        label: "DM Policy",
+        help: "Who may DM the bot: open to all, allowlist only, or pairing approval.",
+      },
+      allowFrom: {
+        label: "DM Allowlist",
+        help: 'Sender ids allowed to DM; required by the allowlist policy (use ["*"] for everyone).',
+      },
+      groupPolicy: {
+        label: "Group Policy",
+        help: "Which groups the bot responds in: open, allowlist, or disabled.",
+      },
+      groupAllowFrom: {
+        label: "Group Allowlist",
+        help: "Conversation ids allowed when the group policy is allowlist.",
+      },
+      requireMention: {
+        label: "Require @Mention",
+        help: "In groups, only respond when the bot is @-mentioned.",
+      },
+      groups: {
+        label: "Per-group Overrides",
+        help: "Per-conversation overrides for mention, admission, tools, and prompts.",
+      },
+      separateSessionByConversation: {
+        label: "Separate Sessions",
+        help: "Give each conversation its own session context (complements session.dmScope).",
+      },
+      sharedMemoryAcrossConversations: {
+        label: "Shared Memory",
+        help: "Share agent memory across this channel or account's conversations.",
+      },
+      typingIndicator: { label: "Typing Indicator" },
+      systemPrompt: { label: "System Prompt" },
+      tools: {
+        label: "Tool Access",
+        help: "Per-account allow/deny lists over the tools the agent may use.",
+      },
+      ackText: {
+        label: "Ack Text",
+        help: "Immediate acknowledgement text used while an async reply is pending.",
+      },
+      asyncMode: {
+        label: "Async Mode",
+        help: "Reply asynchronously: ack first, deliver the answer when it is ready.",
+      },
+      historyLimit: { label: "History Limit" },
+      textChunkLimit: { label: "Text Chunk Limit" },
+      mediaMaxMb: { label: "Media Max MB" },
+      resolveSenderNames: { label: "Resolve Sender Names" },
+      groupSessionScope: { label: "Group Session Scope" },
+      groupReplyMode: { label: "Group Reply Mode" },
+      endpoint: { label: "Endpoint" },
+      debug: { label: "Debug" },
+      heartbeatVisibility: { label: "Heartbeat Visibility" },
+    },
     schemaUnavailable: "Schema unavailable.",
     unsupportedSchema: "Unsupported schema. Use Raw.",
     unsupportedNode: "Unsupported schema node. Use Raw mode.",

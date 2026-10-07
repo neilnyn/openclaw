@@ -1,4 +1,5 @@
 import { html } from "lit";
+import type { ConfigUiHints } from "../../api/types.ts";
 import {
   analyzeConfigSchema,
   renderConfigTierGroups,
@@ -9,6 +10,7 @@ import {
 import { renderSettingsLoadingSkeleton } from "../../components/settings-ui.ts";
 import { t } from "../../i18n/index.ts";
 import { formatChannelExtraValue, resolveChannelConfigValue } from "../../lib/channels/index.ts";
+import { CHANNEL_FIELD_META } from "./view.field-meta.ts";
 import type { ChannelsProps } from "./view.types.ts";
 
 function resolveSchemaNode(schema: JsonSchema | null, path: string[]): JsonSchema | null {
@@ -23,6 +25,36 @@ function resolveSchemaNode(schema: JsonSchema | null, path: string[]): JsonSchem
       (additional && typeof additional === "object" ? additional : null);
   }
   return current;
+}
+
+/**
+ * Layers the curated channel field vocabulary over the gateway uiHints at
+ * the concrete channel paths (direct hints win over wildcards, so
+ * overriding here is the only way labels and ordering take effect). Only
+ * presentation keys are touched; server-owned flags like `sensitive` pass
+ * through untouched.
+ */
+export function withChannelFieldHints(hints: ConfigUiHints, channelId: string): ConfigUiHints {
+  const merged: ConfigUiHints = { ...hints };
+  const prefixes = [`channels.${channelId}`, `channels.${channelId}.accounts.*`];
+  for (const [field, meta] of Object.entries(CHANNEL_FIELD_META)) {
+    for (const prefix of prefixes) {
+      const key = `${prefix}.${field}`;
+      const existing = hints[key];
+      merged[key] = {
+        ...existing,
+        // The dictionary fills presentation keys the gateway hints do not
+        // set; explicitly provided hints (operator or plugin) keep winning.
+        ...(existing?.label === undefined ? { label: t(meta.labelKey) } : {}),
+        ...(existing?.help === undefined && meta.helpKey ? { help: t(meta.helpKey) } : {}),
+        ...(existing?.order === undefined ? { order: meta.order } : {}),
+        // Dictionary fields render in the common section unless explicitly
+        // folded away (the bare-hint default is advanced).
+        ...(existing?.advanced === undefined ? { advanced: meta.advanced ?? false } : {}),
+      };
+    }
+  }
+  return merged;
 }
 
 const EXTRA_CHANNEL_FIELDS = ["groupPolicy", "streamMode", "dmPolicy"] as const;
@@ -58,13 +90,14 @@ function renderChannelConfigForm(channelId: string, props: ChannelsProps, disabl
   }
   const value = resolveChannelConfigValue(config.configForm ?? {}, channelId) ?? {};
   const path = ["channels", channelId];
+  const hints = withChannelFieldHints(config.configUiHints, channelId);
   const unsupported = new Set(analysis.unsupportedPaths);
   return html`
     <div class="config-form">
       ${renderConfigTierGroups({
         schema: node,
         path,
-        hints: config.configUiHints,
+        hints,
         revealAdvanced: props.showAdvancedSettings,
         onShowAdvanced: () => props.onShowAdvancedSettings(true),
         onHideAdvanced: () => props.onShowAdvancedSettings(false),
@@ -73,7 +106,7 @@ function renderChannelConfigForm(channelId: string, props: ChannelsProps, disabl
             schema: tier,
             value,
             path,
-            hints: config.configUiHints,
+            hints,
             unsupported,
             disabled,
             showLabel: false,
