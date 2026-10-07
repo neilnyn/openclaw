@@ -9,11 +9,14 @@ import {
   validateConfigGetParams,
   validateConfigPatchParams,
   validateConfigSchemaLookupParams,
+  validateConfigVaultSecretParams,
+  validateConfigVaultSecretResult,
   validateConfigSchemaLookupResult,
   validateConfigSchemaParams,
   validateConfigSetParams,
 } from "../../../packages/gateway-protocol/src/index.js";
 import { readAgentRosterProperty } from "../../agents/agent-scope-config.js";
+import { getRuntimeConfig } from "../../config/config.js";
 import {
   createConfigIO,
   parseConfigJson5,
@@ -45,8 +48,14 @@ import {
 import { formatErrorMessage } from "../../infra/errors.js";
 import { isPlainObject } from "../../infra/plain-object.js";
 import { redactToolDetail } from "../../logging/redact.js";
+import { registerSecretValueForRedaction } from "../../logging/secret-redaction-registry.js";
 import { getActivePluginRegistryVersion } from "../../plugins/runtime.js";
 import { normalizeAgentId } from "../../routing/session-key.js";
+import { runSecretsApply } from "../../secrets/apply.js";
+import {
+  buildConfigureCandidatesForScope,
+  buildSecretsConfigurePlan,
+} from "../../secrets/configure-plan.js";
 import {
   isRetryableSecretDegradationReason,
   redactSecretDegradationReason,
@@ -55,6 +64,7 @@ import {
   prepareSecretsRuntimeSnapshot,
   type PreparedSecretsRuntimeSnapshot,
 } from "../../secrets/runtime.js";
+import { writeSecretStoreEntry } from "../../secrets/store/secret-store.js";
 import { diffConfigPaths, diffGatewayReloadPaths } from "../config-diff.js";
 import { invalidateConfigGetResponseCache, readConfigGetResponse } from "../config-get-response.js";
 import {
@@ -839,6 +849,29 @@ function diffConfigLeafPaths(prev: unknown, next: unknown, prefix = ""): string[
   return diffConfigPaths(prev, next, prefix);
 }
 
+function readRuntimeConfigPath(config: OpenClawConfig, segments: readonly string[]): unknown {
+  let current: unknown = config;
+  for (const segment of segments) {
+    if (typeof current !== "object" || current === null || Array.isArray(current)) {
+      return undefined;
+    }
+    current = (current as Record<string, unknown>)[segment];
+  }
+  return current;
+}
+
+/** Deterministic vault id for a config path: uppercase snake_case, letter-first, capped at 128 chars. */
+function vaultStoreIdFromSegments(segments: readonly string[]): string {
+  const raw = segments
+    .map((segment) => segment.replace(/[^A-Za-z0-9]+/g, "_"))
+    .join("_")
+    .replace(/_+/g, "_")
+    .replace(/^_+|_+$/g, "");
+  const upper = raw.toUpperCase();
+  const id = /^[A-Z]/.test(upper) ? upper : `S_${upper}`;
+  return id.slice(0, 128);
+}
+
 export const configHandlers: GatewayRequestHandlers = {
   "config.get": async ({ params, respond, context }) => {
     if (!assertValidParams(params, validateConfigGetParams, "config.get", respond)) {
@@ -868,6 +901,81 @@ export const configHandlers: GatewayRequestHandlers = {
       return;
     }
     respond(true, loadSchemaWithPlugins(), undefined);
+  },
+
+  "config.vaultSecret": async ({ params, respond, context }) => {
+    if (
+      !assertValidParams(params, validateConfigVaultSecretParams, "config.vaultSecret", respond)
+    ) {
+      return;
+    }
+    const path = (params as { path: string }).path;
+    // The gateway owns the only unredacted copy of the value: the UI learns a
+    // field is plaintext only through the redaction sentinel, so the move into
+    // the secrets store must run entirely server-side.
+    const config = getRuntimeConfig();
+    const candidate = buildConfigureCandidatesForScope({ config }).find(
+      (entry) =>
+        entry.configFile === "openclaw.json" &&
+        entry.path === path &&
+        entry.existingRef === undefined &&
+        !entry.isDerived,
+    );
+    const plaintext =
+      candidate === undefined ? undefined : readRuntimeConfigPath(config, candidate.pathSegments);
+    if (candidate === undefined || typeof plaintext !== "string" || plaintext.trim().length === 0) {
+      respond(
+        false,
+        undefined,
+        errorShape(
+          ErrorCodes.INVALID_REQUEST,
+          `config.vaultSecret: no vaultable plaintext value at ${sanitizePathForLog(path)}`,
+        ),
+      );
+      return;
+    }
+    const id = vaultStoreIdFromSegments(candidate.pathSegments);
+    try {
+      // runSecretsApply only rewrites config refs (its CLI callers store the
+      // value first), so persist the plaintext into the team store here and
+      // keep it out of logs before the apply validates ref resolvability.
+      registerSecretValueForRedaction(plaintext);
+      writeSecretStoreEntry({
+        scope: { kind: "team" },
+        name: id,
+        value: plaintext,
+        kind: "secret",
+        updatedBy: "config.vaultSecret",
+      });
+      const plan = buildSecretsConfigurePlan({
+        selectedTargets: new Map([
+          [candidate.path, { ...candidate, ref: { source: "store", provider: "default", id } }],
+        ]),
+        providerChanges: { upserts: {}, deletes: [] },
+      });
+      const applied = await runSecretsApply({ plan, write: true });
+      const result = { id, changed: applied.changed };
+      if (!validateConfigVaultSecretResult(result)) {
+        const errors = validateConfigVaultSecretResult.errors ?? [];
+        context.logGateway.warn(
+          `config.vaultSecret produced invalid payload for ${sanitizePathForLog(path)}: ${formatValidationErrors(errors)}`,
+        );
+        respond(
+          false,
+          undefined,
+          errorShape(ErrorCodes.UNAVAILABLE, "config.vaultSecret returned invalid payload", {
+            details: { errors },
+          }),
+        );
+        return;
+      }
+      respond(true, result, undefined);
+    } catch (error) {
+      context.logGateway.warn(
+        `config.vaultSecret failed for ${sanitizePathForLog(path)}: ${String(error)}`,
+      );
+      respond(false, undefined, errorShape(ErrorCodes.UNAVAILABLE, "config.vaultSecret failed"));
+    }
   },
   "config.schema.lookup": ({ params, respond, context }) => {
     if (
@@ -902,6 +1010,7 @@ export const configHandlers: GatewayRequestHandlers = {
     }
     respond(true, result, undefined);
   },
+
   "config.set": async ({ params, respond, context }) => {
     if (!assertValidParams(params, validateConfigSetParams, "config.set", respond)) {
       return;

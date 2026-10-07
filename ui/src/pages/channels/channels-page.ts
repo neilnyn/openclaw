@@ -16,9 +16,12 @@ import { renderLearnMoreLink } from "../../components/settings-ui.ts";
 import { renderSettingsWorkspace } from "../../components/settings-workspace.ts";
 import { t } from "../../i18n/index.ts";
 import { resolveChannelPairingAuthSignature } from "../../lib/channels/index.ts";
+import { pathKey } from "../../lib/config-form-utils.ts";
 import { formatUiError } from "../../lib/format-error.ts";
 import type { GatewayConnectionScope } from "../../lib/gateway-connection-lifecycle.ts";
 import { resolveScrollBehavior } from "../../lib/scroll-behavior.ts";
+import { deriveSecretsStoreIdFromPath } from "../../lib/secrets-store/index.ts";
+import { showToast } from "../../lib/toast.ts";
 import {
   GatewayPageController,
   type GatewayPageChange,
@@ -258,6 +261,48 @@ class ChannelsPage extends OpenClawLightDomElement {
   private setShowAdvancedSettings(enabled: boolean) {
     patchSettings({ showAdvancedSettings: enabled });
     this.context.theme.refresh();
+  }
+
+  private async vaultChannelSecret(path: Array<string | number>, value: string) {
+    const context = this.context;
+    const gateway = context?.gateway.snapshot;
+    const client = gateway?.phase === "connected" ? gateway.client : null;
+    if (!context || !client) {
+      showToast({ message: t("channels.vault.unavailable") });
+      return;
+    }
+    const id = deriveSecretsStoreIdFromPath(path);
+    try {
+      await client.request("secrets.store.set", { name: id, value, kind: "secret" });
+    } catch (error) {
+      showToast({ message: t("channels.vault.failed", { error: formatUiError(error) }) });
+      return;
+    }
+    // The store entry is durable immediately; the config swap waits for Save
+    // like any other field edit, so the operator can still discard the ref.
+    context.runtimeConfig.patchForm(path, { source: "store", provider: "default", id });
+    showToast({ message: t("channels.vault.saved", { id }) });
+  }
+
+  private async vaultStoredSecret(path: Array<string | number>) {
+    const context = this.context;
+    const gateway = context?.gateway.snapshot;
+    const client = gateway?.phase === "connected" ? gateway.client : null;
+    if (!context || !client) {
+      showToast({ message: t("channels.vault.unavailable") });
+      return;
+    }
+    try {
+      const result = await client.request<{ id: string; changed: boolean }>("config.vaultSecret", {
+        path: pathKey(path),
+      });
+      showToast({ message: t("channels.vault.saved", { id: result.id }) });
+      // The gateway rewrote the config file; pull the fresh state so the field
+      // flips from the sentinel to its new store reference.
+      await context.runtimeConfig.refresh();
+    } catch (error) {
+      showToast({ message: t("channels.vault.failed", { error: formatUiError(error) }) });
+    }
   }
 
   private async saveChannelConfig() {
@@ -638,6 +683,8 @@ class ChannelsPage extends OpenClawLightDomElement {
           onWhatsAppLogout: () => void this.confirmWhatsAppLogout(),
           onShowAdvancedSettings: (enabled) => this.setShowAdvancedSettings(enabled),
           onConfigPatch: (path, value) => context.runtimeConfig.patchForm(path, value),
+          onVaultSecret: (path, value) => void this.vaultChannelSecret(path, value),
+          onVaultStoredSecret: (path) => void this.vaultStoredSecret(path),
           onConfigSave: () => void this.saveChannelConfig(),
           onConfigReload: () => void this.reloadChannelConfig(),
           onNostrProfileEdit: (accountId, profile) => this.editNostrProfile(accountId, profile),

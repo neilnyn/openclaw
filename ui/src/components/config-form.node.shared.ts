@@ -61,6 +61,10 @@ export type ConfigNodeRenderParams = {
   maskSensitive?: boolean;
   isSensitivePathRevealed?: (path: Array<string | number>) => boolean;
   onToggleSensitivePath?: (path: Array<string | number>) => void;
+  /** Moves a locally typed sensitive value into the secrets vault and swaps in a store reference. */
+  onVaultSecret?: (path: Array<string | number>, value: string) => void;
+  /** Server-side variant for sentinel-redacted fields whose value the UI cannot read. */
+  onVaultStoredSecret?: (path: Array<string | number>) => void;
   onPatch: (path: Array<string | number>, value: unknown) => boolean | void;
   onRemove?: (path: Array<string | number>) => boolean | void;
 };
@@ -81,6 +85,8 @@ export function configChildRenderOptions(params: ConfigNodeRenderParams) {
     revealSensitive: params.revealSensitive,
     isSensitivePathRevealed: params.isSensitivePathRevealed,
     onToggleSensitivePath: params.onToggleSensitivePath,
+    onVaultSecret: params.onVaultSecret,
+    onVaultStoredSecret: params.onVaultStoredSecret,
   };
 }
 
@@ -228,6 +234,7 @@ export function renderFieldRow(params: {
   stacked?: boolean;
   error?: unknown;
   errorId?: string;
+  extraControls?: TemplateResult | typeof nothing;
 }): TemplateResult {
   // Array/map item rows resolve their meta from the parent path (numeric and
   // wildcard segments collapse), so their help is the parent's. Showing it again
@@ -276,19 +283,20 @@ export function renderFieldRow(params: {
       }
       ${
         params.control !== nothing
-          ? html`<div class="settings-row__control">
-              ${params.control}
-              ${
-                params.errorId
-                  ? html`<span
-                      id=${params.errorId}
-                      class="cfg-field__error settings-control__sr-label"
-                      role="alert"
-                      hidden
-                    ></span>`
-                  : nothing
-              }
-            </div>`
+          ? html`${params.extraControls ?? nothing}
+              <div class="settings-row__control">
+                ${params.control}
+                ${
+                  params.errorId
+                    ? html`<span
+                        id=${params.errorId}
+                        class="cfg-field__error settings-control__sr-label"
+                        role="alert"
+                        hidden
+                      ></span>`
+                    : nothing
+                }
+              </div>`
           : nothing
       }
     </div>

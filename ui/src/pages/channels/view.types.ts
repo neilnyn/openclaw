@@ -61,6 +61,10 @@ export type ChannelsProps = {
   onWhatsAppLogout: () => void;
   onShowAdvancedSettings: (enabled: boolean) => void;
   onConfigPatch: (path: Array<string | number>, value: unknown) => void;
+  /** Moves a plaintext sensitive field value into the secrets vault and swaps in a store reference. */
+  onVaultSecret?: (path: Array<string | number>, value: string) => void;
+  /** Server-side variant for sentinel-redacted fields whose value the UI cannot read. */
+  onVaultStoredSecret?: (path: Array<string | number>) => void;
   onConfigSave: () => void;
   onConfigReload: () => void;
   onNostrProfileEdit: (accountId: string, profile: NostrProfile | null) => void;

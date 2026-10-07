@@ -78,6 +78,8 @@ function renderChannelConfigForm(channelId: string, props: ChannelsProps, disabl
             disabled,
             showLabel: false,
             onPatch: props.onConfigPatch,
+            onVaultSecret: props.onVaultSecret,
+            onVaultStoredSecret: props.onVaultStoredSecret,
           }),
       })}
     </div>

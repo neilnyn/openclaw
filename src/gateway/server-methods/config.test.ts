@@ -89,6 +89,41 @@ vi.mock("../../config/runtime-schema.js", () => ({
   loadGatewayRuntimeConfigSchema: loadGatewayRuntimeConfigSchemaMock,
 }));
 
+const {
+  getRuntimeConfigMock,
+  buildConfigureCandidatesForScopeMock,
+  buildSecretsConfigurePlanMock,
+  runSecretsApplyMock,
+} = vi.hoisted(() => ({
+  getRuntimeConfigMock: vi.fn(),
+  buildConfigureCandidatesForScopeMock: vi.fn(),
+  buildSecretsConfigurePlanMock: vi.fn(),
+  runSecretsApplyMock: vi.fn(),
+}));
+
+vi.mock("../../config/config.js", async () => {
+  const actual =
+    await vi.importActual<typeof import("../../config/config.js")>("../../config/config.js");
+  return { ...actual, getRuntimeConfig: getRuntimeConfigMock };
+});
+
+vi.mock("../../secrets/configure-plan.js", async () => {
+  const actual = await vi.importActual<typeof import("../../secrets/configure-plan.js")>(
+    "../../secrets/configure-plan.js",
+  );
+  return {
+    ...actual,
+    buildConfigureCandidatesForScope: buildConfigureCandidatesForScopeMock,
+    buildSecretsConfigurePlan: buildSecretsConfigurePlanMock,
+  };
+});
+
+vi.mock("../../secrets/apply.js", async () => {
+  const actual =
+    await vi.importActual<typeof import("../../secrets/apply.js")>("../../secrets/apply.js");
+  return { ...actual, runSecretsApply: runSecretsApplyMock };
+});
+
 function mockOpenPathError(error: Error) {
   execOpenPathMock.mockRejectedValue(error);
 }
@@ -1071,5 +1106,63 @@ describe("config.patch model input normalization", () => {
       models: { [canonical]: { alias: "Ops Gemini" } },
     });
     expect(storedConfig.models?.providers?.google?.models?.[0]?.id).toBe("gemini-3.1-pro-preview");
+  });
+});
+
+describe("config.vaultSecret", () => {
+  const candidatePath = "channels.dingtalk-connector.accounts.bot.clientSecret";
+
+  function candidateFixture() {
+    return {
+      type: "channel-secret",
+      path: candidatePath,
+      pathSegments: ["channels", "dingtalk-connector", "accounts", "bot", "clientSecret"],
+      label: candidatePath,
+      configFile: "openclaw.json" as const,
+      expectedResolvedValue: "string" as const,
+    };
+  }
+
+  it("moves a plaintext secret into the store and rewrites the config ref", async () => {
+    getRuntimeConfigMock.mockReturnValue({
+      channels: { "dingtalk-connector": { accounts: { bot: { clientSecret: "sec" } } } },
+    });
+    buildConfigureCandidatesForScopeMock.mockReturnValue([candidateFixture()]);
+    buildSecretsConfigurePlanMock.mockReturnValue({ version: 1, protocolVersion: 1, targets: [] });
+    runSecretsApplyMock.mockResolvedValue({ changed: true });
+
+    const harness = createConfigHandlerHarness({
+      method: "config.vaultSecret",
+      params: { path: candidatePath },
+    });
+    await configHandlers["config.vaultSecret"](harness.options);
+
+    expect(runSecretsApplyMock).toHaveBeenCalledWith(expect.objectContaining({ write: true }));
+    expect(harness.respond).toHaveBeenCalledWith(
+      true,
+      {
+        id: "CHANNELS_DINGTALK_CONNECTOR_ACCOUNTS_BOT_CLIENTSECRET",
+        changed: true,
+      },
+      undefined,
+    );
+  });
+
+  it("rejects paths without a vaultable plaintext value", async () => {
+    getRuntimeConfigMock.mockReturnValue({});
+    buildConfigureCandidatesForScopeMock.mockReturnValue([]);
+
+    const harness = createConfigHandlerHarness({
+      method: "config.vaultSecret",
+      params: { path: candidatePath },
+    });
+    await configHandlers["config.vaultSecret"](harness.options);
+
+    expect(runSecretsApplyMock).not.toHaveBeenCalled();
+    expect(harness.respond).toHaveBeenCalledWith(
+      false,
+      undefined,
+      expect.objectContaining({ code: expect.any(String) }),
+    );
   });
 });

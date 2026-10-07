@@ -3,6 +3,7 @@ import type { GatewayBrowserClient } from "../../api/gateway.ts";
 import {
   bulkSetSecretsStoreEntries,
   createInitialSecretsStoreState,
+  deriveSecretsStoreIdFromPath,
   parseSecretsStoreBulkInput,
   setSecretsStoreEntry,
 } from "./index.ts";
@@ -105,5 +106,24 @@ describe("secrets store state", () => {
       kind: "secret",
       allowedHosts: ["api.example.com", "uploads.example.com", "api2.example.com"],
     });
+  });
+});
+
+describe("deriveSecretsStoreIdFromPath", () => {
+  it("derives a letter-first uppercase snake id from a config path", () => {
+    expect(
+      deriveSecretsStoreIdFromPath([
+        "channels",
+        "dingtalk-connector",
+        "accounts",
+        "main",
+        "clientSecret",
+      ]),
+    ).toBe("CHANNELS_DINGTALK_CONNECTOR_ACCOUNTS_MAIN_CLIENTSECRET");
+  });
+
+  it("prefixes ids that would start with a digit and caps length", () => {
+    expect(deriveSecretsStoreIdFromPath(["1abc"])).toBe("S_1ABC");
+    expect(deriveSecretsStoreIdFromPath(["a".repeat(200)]).length).toBeLessThanOrEqual(128);
   });
 });

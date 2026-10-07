@@ -3,6 +3,7 @@ import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { html, nothing, type TemplateResult } from "lit";
 import { ref } from "lit/directives/ref.js";
 import { i18n, t } from "../i18n/index.ts";
+import { REDACTED_SENTINEL } from "../lib/config-form-utils.ts";
 import {
   configValuesEqual,
   isSupportedConfigValueValid,
@@ -348,6 +349,47 @@ export function renderTextInput(
         disabled,
         onToggleSensitivePath: params.onToggleSensitivePath,
       });
+  // Plaintext sensitive values can be moved into the secrets vault in place;
+  // the owner page swaps the field for a store reference once stored. The
+  // server never ships real secrets to the UI: loaded values arrive as the
+  // redaction sentinel, and vaulting that would store the placeholder. Only a
+  // locally typed value (new entry drafts, fresh edits) is vaultable here.
+  const vaultAction =
+    sensitiveState.isSensitive &&
+    !isStructuredSecretRef &&
+    typeof value === "string" &&
+    value.length > 0 &&
+    value !== REDACTED_SENTINEL &&
+    params.onVaultSecret
+      ? html`
+          <button
+            type="button"
+            class="btn btn--sm"
+            ?disabled=${disabled}
+            title=${t("configForm.vaultSecretHint")}
+            @click=${() => params.onVaultSecret?.(path, value)}
+          >
+            ${t("configForm.vaultSecret")}
+          </button>
+        `
+      : nothing;
+  // Sentinel-redacted fields hold a plaintext value only the gateway can read;
+  // surface its on-disk state and offer the server-side move to the vault.
+  const vaultStoredAction =
+    sensitiveState.sentinelRedacted && params.onVaultStoredSecret
+      ? html`
+          <span class="settings-row__desc">${t("configForm.plaintextStored")}</span>
+          <button
+            type="button"
+            class="btn btn--sm"
+            ?disabled=${disabled}
+            title=${t("configForm.vaultSecretHint")}
+            @click=${() => params.onVaultStoredSecret?.(path)}
+          >
+            ${t("configForm.vaultSecret")}
+          </button>
+        `
+      : nothing;
   const wrappedInput = wrapSensitiveControl(inputControl, revealToggle);
   const presentedInput = isPhonePresentation
     ? html`
@@ -367,6 +409,10 @@ export function renderTextInput(
       effectiveRedacted || masked ? nothing : renderSchemaDefaultDescription(schema, value),
     control: presentedInput,
     errorId,
+    extraControls:
+      vaultAction === nothing && vaultStoredAction === nothing
+        ? nothing
+        : html`${vaultAction}${vaultStoredAction}`,
   });
 }
 

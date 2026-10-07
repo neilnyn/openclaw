@@ -73,6 +73,7 @@ export const CORE_GATEWAY_METHOD_SPECS = [
   ["config.patch", "config", "operator.admin", "<=2026.7", CONTROL_PLANE_WRITE],
   ["config.schema", "config", "operator.read", "<=2026.7"],
   ["config.schema.lookup", "config", "operator.read", "<=2026.7"],
+  ["config.vaultSecret", "config", "operator.admin", "2026.9", CONTROL_PLANE_WRITE],
   ["exec.approvals.get", "exec-approvals", "operator.admin", "<=2026.7"],
   ["exec.approvals.set", "exec-approvals", "operator.admin", "<=2026.7"],
   ["exec.approvals.node.get", "exec-approvals", "operator.admin", "<=2026.7"],

@@ -467,6 +467,11 @@ export const en: TranslationMap & {
     generic: {
       subtitle: "Channel status and configuration.",
     },
+    vault: {
+      unavailable: "Secrets vault unavailable. Check the gateway connection.",
+      failed: "Moving to the secrets vault failed: {error}",
+      saved: "Stored in the vault as {id}. Save to apply the reference.",
+    },
     discord: {
       title: "Discord",
       subtitle: "Bot status and channel configuration.",
@@ -1519,6 +1524,9 @@ export const en: TranslationMap & {
     addEntry: "Add Entry",
     key: "Key",
     removeEntry: "Remove entry",
+    vaultSecret: "Move to vault",
+    vaultSecretHint: "Store this value in the secrets vault and replace it with a store reference",
+    plaintextStored: "Plaintext in config file",
     renameRedactedBlocked:
       "This entry holds a stored secret. Add the new key with its value, then remove this one.",
     schemaUnavailable: "Schema unavailable.",

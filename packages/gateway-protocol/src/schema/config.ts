@@ -59,6 +59,17 @@ export const ConfigSchemaLookupParamsSchema = closedObject({
   path: ConfigSchemaLookupPathString,
 });
 
+/** Vault-secret request: move the plaintext value at one sensitive config path into the secrets store. */
+export const ConfigVaultSecretParamsSchema = closedObject({
+  path: ConfigSchemaLookupPathString,
+});
+
+/** Vault-secret result: the store id that now backs the path, and whether config changed. */
+export const ConfigVaultSecretResultSchema = closedObject({
+  id: NonEmptyString,
+  changed: Type.Boolean(),
+});
+
 /** Request payload for cached status or an explicit checkout refresh. */
 export const UpdateStatusParamsSchema = closedObject({
   refreshCheckout: Type.Optional(Type.Boolean()),
