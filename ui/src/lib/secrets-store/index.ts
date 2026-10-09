@@ -191,15 +191,3 @@ export async function bulkSetSecretsStoreEntries(
   }
   return mutationError ? null : { saved, warningCount };
 }
-
-/** Deterministic vault id for a config path: uppercase snake_case, letter-first, capped at 128 chars. */
-export function deriveSecretsStoreIdFromPath(path: ReadonlyArray<string | number>): string {
-  const raw = path
-    .map((segment) => String(segment).replace(/[^A-Za-z0-9]+/g, "_"))
-    .join("_")
-    .replace(/_+/g, "_")
-    .replace(/^_+|_+$/g, "");
-  const upper = raw.toUpperCase();
-  const id = /^[A-Z]/.test(upper) ? upper : `S_${upper}`;
-  return id.slice(0, 128);
-}

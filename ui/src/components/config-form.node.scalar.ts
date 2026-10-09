@@ -2,6 +2,7 @@ import { formatInternationalPhoneNumberForDisplay } from "@openclaw/normalizatio
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { html, nothing, type TemplateResult } from "lit";
 import { ref } from "lit/directives/ref.js";
+import { parseEnvTemplateSecretRef } from "../../../src/config/types.secrets.js";
 import { i18n, t } from "../i18n/index.ts";
 import { REDACTED_SENTINEL } from "../lib/config-form-utils.ts";
 import {
@@ -360,6 +361,9 @@ export function renderTextInput(
     typeof value === "string" &&
     value.length > 0 &&
     value !== REDACTED_SENTINEL &&
+    // String-form references ($NAME / ${NAME}) stay live env credentials;
+    // vaulting them would store the reference text, breaking auth.
+    parseEnvTemplateSecretRef(value) === null &&
     params.onVaultSecret
       ? html`
           <button

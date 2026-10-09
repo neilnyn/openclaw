@@ -59,9 +59,10 @@ export const ConfigSchemaLookupParamsSchema = closedObject({
   path: ConfigSchemaLookupPathString,
 });
 
-/** Vault-secret request: move the plaintext value at one sensitive config path into the secrets store. */
+/** Vault-secret request: move the plaintext value at one sensitive config path into the secrets store. Send `value` for a locally typed plaintext (the UI-side path); omit it to convert the value already authored at the path (the server-side path for sentinel-redacted fields). */
 export const ConfigVaultSecretParamsSchema = closedObject({
   path: ConfigSchemaLookupPathString,
+  value: Type.Optional(NonEmptyString),
 });
 
 /** Vault-secret result: the store id that now backs the path, and whether config changed. */

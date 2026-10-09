@@ -471,6 +471,8 @@ export const en: TranslationMap & {
       unavailable: "Secrets vault unavailable. Check the gateway connection.",
       failed: "Moving to the secrets vault failed: {error}",
       saved: "Stored in the vault as {id}. Save to apply the reference.",
+      superseded:
+        "The field changed while moving to the vault; nothing was overwritten. Reopen the field and retry.",
     },
     discord: {
       title: "Discord",

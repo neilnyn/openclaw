@@ -20,7 +20,6 @@ import { pathKey } from "../../lib/config-form-utils.ts";
 import { formatUiError } from "../../lib/format-error.ts";
 import type { GatewayConnectionScope } from "../../lib/gateway-connection-lifecycle.ts";
 import { resolveScrollBehavior } from "../../lib/scroll-behavior.ts";
-import { deriveSecretsStoreIdFromPath } from "../../lib/secrets-store/index.ts";
 import { showToast } from "../../lib/toast.ts";
 import {
   GatewayPageController,
@@ -54,6 +53,20 @@ function formatNostrProfileOperationError(error: unknown, prefix: string): strin
   return error instanceof DOMException && error.name === "TimeoutError"
     ? t("channels.nostr.notices.timeout")
     : t("channels.nostr.notices.operationFailed", { prefix, error: formatUiError(error) });
+}
+
+function readRuntimeConfigPath(
+  value: Record<string, unknown> | null,
+  path: Array<string | number>,
+): unknown {
+  let current: unknown = value;
+  for (const segment of path) {
+    if (typeof current !== "object" || current === null || Array.isArray(current)) {
+      return undefined;
+    }
+    current = (current as Record<string, unknown>)[segment];
+  }
+  return current;
 }
 
 class ChannelsPage extends OpenClawLightDomElement {
@@ -264,27 +277,17 @@ class ChannelsPage extends OpenClawLightDomElement {
   }
 
   private async vaultChannelSecret(path: Array<string | number>, value: string) {
-    const context = this.context;
-    const gateway = context?.gateway.snapshot;
-    const client = gateway?.phase === "connected" ? gateway.client : null;
-    if (!context || !client) {
-      showToast({ message: t("channels.vault.unavailable") });
-      return;
-    }
-    const id = deriveSecretsStoreIdFromPath(path);
-    try {
-      await client.request("secrets.store.set", { name: id, value, kind: "secret" });
-    } catch (error) {
-      showToast({ message: t("channels.vault.failed", { error: formatUiError(error) }) });
-      return;
-    }
-    // The store entry is durable immediately; the config swap waits for Save
-    // like any other field edit, so the operator can still discard the ref.
-    context.runtimeConfig.patchForm(path, { source: "store", provider: "default", id });
-    showToast({ message: t("channels.vault.saved", { id }) });
+    // Typed-value path: the server mints a fresh store entry and rewrites the
+    // config path in one transaction; the plaintext never enters the config
+    // file, and the predictable-name pitfalls stay server-side.
+    await this.vaultViaRpc(path, value);
   }
 
   private async vaultStoredSecret(path: Array<string | number>) {
+    await this.vaultViaRpc(path, undefined);
+  }
+
+  private async vaultViaRpc(path: Array<string | number>, value: string | undefined) {
     const context = this.context;
     const gateway = context?.gateway.snapshot;
     const client = gateway?.phase === "connected" ? gateway.client : null;
@@ -292,14 +295,41 @@ class ChannelsPage extends OpenClawLightDomElement {
       showToast({ message: t("channels.vault.unavailable") });
       return;
     }
+    // Fence: capture the field's current staged value and the draft base so a
+    // completion cannot overwrite edits made while the request was in flight,
+    // and a reconnect never installs a result from the previous gateway.
+    const configBefore = context.runtimeConfig.state.configForm;
+    const before = readRuntimeConfigPath(configBefore, path);
+    const dirtyBefore = context.runtimeConfig.state.configFormDirty;
     try {
       const result = await client.request<{ id: string; changed: boolean }>("config.vaultSecret", {
         path: pathKey(path),
+        ...(value === undefined ? {} : { value }),
       });
+      const configAfter = context.runtimeConfig.state;
+      const gatewayNow = context.gateway.snapshot;
+      const stillConnected = gatewayNow.phase === "connected" && gatewayNow.client === client;
+      const fieldUntouched =
+        JSON.stringify(readRuntimeConfigPath(configAfter.configForm, path)) ===
+        JSON.stringify(before);
+      if (!stillConnected || !(dirtyBefore ? fieldUntouched : fieldUntouched)) {
+        showToast({ message: t("channels.vault.superseded") });
+        return;
+      }
       showToast({ message: t("channels.vault.saved", { id: result.id }) });
-      // The gateway rewrote the config file; pull the fresh state so the field
-      // flips from the sentinel to its new store reference.
-      await context.runtimeConfig.refresh();
+      if (value === undefined) {
+        // Server-side conversion rewrote the config file; pull fresh state so
+        // the field flips from the sentinel to its new store reference.
+        await context.runtimeConfig.refresh();
+      } else {
+        // Typed path: swap the staged field value for the new reference; the
+        // operator still reviews and saves like any other edit.
+        context.runtimeConfig.patchForm(path, {
+          source: "store",
+          provider: "default",
+          id: result.id,
+        });
+      }
     } catch (error) {
       showToast({ message: t("channels.vault.failed", { error: formatUiError(error) }) });
     }

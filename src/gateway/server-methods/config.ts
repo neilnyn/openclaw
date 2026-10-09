@@ -16,7 +16,6 @@ import {
   validateConfigSetParams,
 } from "../../../packages/gateway-protocol/src/index.js";
 import { readAgentRosterProperty } from "../../agents/agent-scope-config.js";
-import { getRuntimeConfig } from "../../config/config.js";
 import {
   createConfigIO,
   parseConfigJson5,
@@ -38,9 +37,14 @@ import {
 } from "../../config/patch-replace-paths.js";
 import { redactConfigObject, restoreRedactedValues } from "../../config/redact-snapshot.js";
 import { loadGatewayRuntimeConfigSchema } from "../../config/runtime-schema.js";
+import {
+  getRuntimeConfigAppliedHash,
+  getRuntimeConfigSourceSnapshot,
+} from "../../config/runtime-snapshot.js";
 import { lookupConfigSchema, type ConfigSchemaResponse } from "../../config/schema.js";
 import { projectRuntimeChangesOntoSource } from "../../config/source-value-projection.js";
 import type { ConfigValidationIssue, OpenClawConfig } from "../../config/types.openclaw.js";
+import { parseEnvTemplateSecretRef } from "../../config/types.secrets.js";
 import {
   validateConfigObjectRawWithPlugins,
   validateConfigObjectWithPlugins,
@@ -48,7 +52,6 @@ import {
 import { formatErrorMessage } from "../../infra/errors.js";
 import { isPlainObject } from "../../infra/plain-object.js";
 import { redactToolDetail } from "../../logging/redact.js";
-import { registerSecretValueForRedaction } from "../../logging/secret-redaction-registry.js";
 import { getActivePluginRegistryVersion } from "../../plugins/runtime.js";
 import { normalizeAgentId } from "../../routing/session-key.js";
 import { runSecretsApply } from "../../secrets/apply.js";
@@ -56,6 +59,7 @@ import {
   buildConfigureCandidatesForScope,
   buildSecretsConfigurePlan,
 } from "../../secrets/configure-plan.js";
+import { resolveDefaultSecretProviderAlias } from "../../secrets/ref-contract.js";
 import {
   isRetryableSecretDegradationReason,
   redactSecretDegradationReason,
@@ -64,7 +68,7 @@ import {
   prepareSecretsRuntimeSnapshot,
   type PreparedSecretsRuntimeSnapshot,
 } from "../../secrets/runtime.js";
-import { writeSecretStoreEntry } from "../../secrets/store/secret-store.js";
+import { writeSecretStoreEntryForConfigRef } from "../../secrets/store/secret-store.js";
 import { diffConfigPaths, diffGatewayReloadPaths } from "../config-diff.js";
 import { invalidateConfigGetResponseCache, readConfigGetResponse } from "../config-get-response.js";
 import {
@@ -860,7 +864,7 @@ function readRuntimeConfigPath(config: OpenClawConfig, segments: readonly string
   return current;
 }
 
-/** Deterministic vault id for a config path: uppercase snake_case, letter-first, capped at 128 chars. */
+/** Deterministic vault base name for a config path; the store writer appends a random suffix so the final entry name is fresh. */
 function vaultStoreIdFromSegments(segments: readonly string[]): string {
   const raw = segments
     .map((segment) => segment.replace(/[^A-Za-z0-9]+/g, "_"))
@@ -910,20 +914,63 @@ export const configHandlers: GatewayRequestHandlers = {
       return;
     }
     const path = (params as { path: string }).path;
-    // The gateway owns the only unredacted copy of the value: the UI learns a
-    // field is plaintext only through the redaction sentinel, so the move into
-    // the secrets store must run entirely server-side.
-    const config = getRuntimeConfig();
-    const candidate = buildConfigureCandidatesForScope({ config }).find(
+    const typedValue = (params as { value?: string }).value;
+    // The gateway owns the only unredacted copy of an authored value: the UI
+    // learns a field is plaintext only through the redaction sentinel, so the
+    // server-side conversion runs entirely here. Classification must run on
+    // the authored source config — the activated snapshot expands secret
+    // references, which would hide an existing ref and copy the resolved
+    // credential into the team store instead of preserving the operator's
+    // reference and its external rotation.
+    const sourceConfig = getRuntimeConfigSourceSnapshot();
+    if (!sourceConfig) {
+      respond(
+        false,
+        undefined,
+        errorShape(ErrorCodes.UNAVAILABLE, "config.vaultSecret: config source unavailable"),
+      );
+      return;
+    }
+    const appliedHashBefore = getRuntimeConfigAppliedHash();
+    const candidate = buildConfigureCandidatesForScope({ config: sourceConfig }).find(
       (entry) =>
         entry.configFile === "openclaw.json" &&
         entry.path === path &&
         entry.existingRef === undefined &&
         !entry.isDerived,
     );
+    if (candidate === undefined) {
+      respond(
+        false,
+        undefined,
+        errorShape(
+          ErrorCodes.INVALID_REQUEST,
+          `config.vaultSecret: no vaultable config path at ${sanitizePathForLog(path)}`,
+        ),
+      );
+      return;
+    }
+    // Typed path: the UI sends the locally typed plaintext. It must not be a
+    // string-form reference ($NAME / ${NAME}) — storing that literally would
+    // swap a live credential for its reference text.
+    if (typedValue !== undefined && parseEnvTemplateSecretRef(typedValue) !== null) {
+      respond(
+        false,
+        undefined,
+        errorShape(
+          ErrorCodes.INVALID_REQUEST,
+          `config.vaultSecret: ${sanitizePathForLog(path)} holds an environment reference; vaulting it would store the reference text`,
+        ),
+      );
+      return;
+    }
+    const authored = readRuntimeConfigPath(sourceConfig, candidate.pathSegments);
+    // Server path: the authored value must be a real plaintext string (an
+    // object reference was already filtered by existingRef above).
     const plaintext =
-      candidate === undefined ? undefined : readRuntimeConfigPath(config, candidate.pathSegments);
-    if (candidate === undefined || typeof plaintext !== "string" || plaintext.trim().length === 0) {
+      typedValue ??
+      (typeof authored === "string" && authored.trim().length > 0 ? authored : undefined);
+    if (plaintext === undefined || plaintext.trim().length === 0) {
       respond(
         false,
         undefined,
@@ -934,27 +981,34 @@ export const configHandlers: GatewayRequestHandlers = {
       );
       return;
     }
-    const id = vaultStoreIdFromSegments(candidate.pathSegments);
     try {
-      // runSecretsApply only rewrites config refs (its CLI callers store the
-      // value first), so persist the plaintext into the team store here and
-      // keep it out of logs before the apply validates ref resolvability.
-      registerSecretValueForRedaction(plaintext);
-      writeSecretStoreEntry({
-        scope: { kind: "team" },
-        name: id,
+      // Mint a fresh store entry (random-suffixed name) on the state worker:
+      // a predictable name could collide with or revive an entry another
+      // consumer still references, re-associating this credential with it,
+      // and a synchronous SQLite transaction here would block the gateway
+      // event loop.
+      const baseName = vaultStoreIdFromSegments(candidate.pathSegments);
+      const name = await writeSecretStoreEntryForConfigRef({
+        baseName,
         value: plaintext,
-        kind: "secret",
         updatedBy: "config.vaultSecret",
+      });
+      // Carry the configured default store-provider alias so the written
+      // reference actually resolves under secrets.defaults.store.
+      const storeProvider = resolveDefaultSecretProviderAlias(sourceConfig, "store", {
+        preferFirstProviderForSource: true,
       });
       const plan = buildSecretsConfigurePlan({
         selectedTargets: new Map([
-          [candidate.path, { ...candidate, ref: { source: "store", provider: "default", id } }],
+          [
+            candidate.path,
+            { ...candidate, ref: { source: "store", provider: storeProvider, id: name } },
+          ],
         ]),
         providerChanges: { upserts: {}, deletes: [] },
       });
       const applied = await runSecretsApply({ plan, write: true });
-      const result = { id, changed: applied.changed };
+      const result = { id: name, changed: applied.changed };
       if (!validateConfigVaultSecretResult(result)) {
         const errors = validateConfigVaultSecretResult.errors ?? [];
         context.logGateway.warn(
@@ -966,6 +1020,22 @@ export const configHandlers: GatewayRequestHandlers = {
           errorShape(ErrorCodes.UNAVAILABLE, "config.vaultSecret returned invalid payload", {
             details: { errors },
           }),
+        );
+        return;
+      }
+      // The conversion was bound to the source revision observed on entry; a
+      // concurrently accepted config change invalidates this snapshot's view.
+      if (appliedHashBefore && getRuntimeConfigAppliedHash() !== appliedHashBefore) {
+        context.logGateway.warn(
+          `config.vaultSecret raced a concurrent config change at ${sanitizePathForLog(path)}; stored entry ${name} is orphaned and the config path was not rewritten`,
+        );
+        respond(
+          false,
+          undefined,
+          errorShape(
+            ErrorCodes.UNAVAILABLE,
+            "config.vaultSecret: config changed concurrently; reload and retry",
+          ),
         );
         return;
       }

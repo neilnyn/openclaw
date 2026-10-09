@@ -94,11 +94,17 @@ const {
   buildConfigureCandidatesForScopeMock,
   buildSecretsConfigurePlanMock,
   runSecretsApplyMock,
+  writeSecretStoreEntryForConfigRefMock,
+  getRuntimeConfigSourceSnapshotMock,
+  getRuntimeConfigAppliedHashMock,
 } = vi.hoisted(() => ({
   getRuntimeConfigMock: vi.fn(),
   buildConfigureCandidatesForScopeMock: vi.fn(),
   buildSecretsConfigurePlanMock: vi.fn(),
   runSecretsApplyMock: vi.fn(),
+  writeSecretStoreEntryForConfigRefMock: vi.fn(),
+  getRuntimeConfigSourceSnapshotMock: vi.fn(),
+  getRuntimeConfigAppliedHashMock: vi.fn(),
 }));
 
 vi.mock("../../config/config.js", async () => {
@@ -122,6 +128,24 @@ vi.mock("../../secrets/apply.js", async () => {
   const actual =
     await vi.importActual<typeof import("../../secrets/apply.js")>("../../secrets/apply.js");
   return { ...actual, runSecretsApply: runSecretsApplyMock };
+});
+
+vi.mock("../../secrets/store/secret-store.js", async () => {
+  const actual = await vi.importActual<typeof import("../../secrets/store/secret-store.js")>(
+    "../../secrets/store/secret-store.js",
+  );
+  return { ...actual, writeSecretStoreEntryForConfigRef: writeSecretStoreEntryForConfigRefMock };
+});
+
+vi.mock("../../config/runtime-snapshot.js", async () => {
+  const actual = await vi.importActual<typeof import("../../config/runtime-snapshot.js")>(
+    "../../config/runtime-snapshot.js",
+  );
+  return {
+    ...actual,
+    getRuntimeConfigSourceSnapshot: getRuntimeConfigSourceSnapshotMock,
+    getRuntimeConfigAppliedHash: getRuntimeConfigAppliedHashMock,
+  };
 });
 
 function mockOpenPathError(error: Error) {
@@ -1123,13 +1147,17 @@ describe("config.vaultSecret", () => {
     };
   }
 
-  it("moves a plaintext secret into the store and rewrites the config ref", async () => {
-    getRuntimeConfigMock.mockReturnValue({
+  it("mints a fresh store entry and rewrites the config ref", async () => {
+    getRuntimeConfigSourceSnapshotMock.mockReturnValue({
       channels: { "dingtalk-connector": { accounts: { bot: { clientSecret: "sec" } } } },
     });
+    getRuntimeConfigAppliedHashMock.mockReturnValue("hash-1");
     buildConfigureCandidatesForScopeMock.mockReturnValue([candidateFixture()]);
     buildSecretsConfigurePlanMock.mockReturnValue({ version: 1, protocolVersion: 1, targets: [] });
     runSecretsApplyMock.mockResolvedValue({ changed: true });
+    writeSecretStoreEntryForConfigRefMock.mockResolvedValue(
+      "CHANNELS_DINGTALK_CONNECTOR_ACCOUNTS_BOT_CLIENTSECRET_AB12CD34EF56AB12",
+    );
 
     const harness = createConfigHandlerHarness({
       method: "config.vaultSecret",
@@ -1137,11 +1165,18 @@ describe("config.vaultSecret", () => {
     });
     await configHandlers["config.vaultSecret"](harness.options);
 
+    expect(writeSecretStoreEntryForConfigRefMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        baseName: "CHANNELS_DINGTALK_CONNECTOR_ACCOUNTS_BOT_CLIENTSECRET",
+        value: "sec",
+        updatedBy: "config.vaultSecret",
+      }),
+    );
     expect(runSecretsApplyMock).toHaveBeenCalledWith(expect.objectContaining({ write: true }));
     expect(harness.respond).toHaveBeenCalledWith(
       true,
       {
-        id: "CHANNELS_DINGTALK_CONNECTOR_ACCOUNTS_BOT_CLIENTSECRET",
+        id: "CHANNELS_DINGTALK_CONNECTOR_ACCOUNTS_BOT_CLIENTSECRET_AB12CD34EF56AB12",
         changed: true,
       },
       undefined,
@@ -1149,7 +1184,7 @@ describe("config.vaultSecret", () => {
   });
 
   it("rejects paths without a vaultable plaintext value", async () => {
-    getRuntimeConfigMock.mockReturnValue({});
+    getRuntimeConfigSourceSnapshotMock.mockReturnValue({});
     buildConfigureCandidatesForScopeMock.mockReturnValue([]);
 
     const harness = createConfigHandlerHarness({
